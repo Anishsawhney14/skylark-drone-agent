@@ -1,11 +1,9 @@
 import streamlit as st
-import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
+import json
 
-# ============================
-# CONNECT USING STREAMLIT SECRETS
-# ============================
 
 def get_client():
 
@@ -14,7 +12,8 @@ def get_client():
         "https://www.googleapis.com/auth/drive"
     ]
 
-    creds_dict = st.secrets["gcp_service_account"]
+    # Load credentials from Streamlit secrets
+    creds_dict = dict(st.secrets["gcp"])
 
     creds = ServiceAccountCredentials.from_json_keyfile_dict(
         creds_dict, scope
@@ -25,10 +24,6 @@ def get_client():
     return client
 
 
-# ============================
-# LOAD SHEET FUNCTION
-# ============================
-
 def load_sheet(sheet_name):
 
     client = get_client()
@@ -37,6 +32,4 @@ def load_sheet(sheet_name):
 
     data = sheet.get_all_records()
 
-    df = pd.DataFrame(data)
-
-    return df
+    return pd.DataFrame(data)
