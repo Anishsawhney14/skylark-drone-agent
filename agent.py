@@ -1,6 +1,4 @@
-from sheets import load_sheet
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from sheets import load_sheet, get_client
 from datetime import datetime
 import time
 
@@ -11,37 +9,17 @@ import time
 
 def is_date_overlap(start1, end1, start2, end2):
 
-    start1 = datetime.strptime(start1, "%Y-%m-%d")
-    end1 = datetime.strptime(end1, "%Y-%m-%d")
+    start1 = datetime.strptime(str(start1), "%Y-%m-%d")
+    end1 = datetime.strptime(str(end1), "%Y-%m-%d")
 
-    start2 = datetime.strptime(start2, "%Y-%m-%d")
-    end2 = datetime.strptime(end2, "%Y-%m-%d")
+    start2 = datetime.strptime(str(start2), "%Y-%m-%d")
+    end2 = datetime.strptime(str(end2), "%Y-%m-%d")
 
     return start1 <= end2 and start2 <= end1
 
 
 # =====================================================
-# GOOGLE SHEETS CONNECTION
-# =====================================================
-
-def get_client():
-
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "credentials.json", scope
-    )
-
-    client = gspread.authorize(creds)
-
-    return client
-
-
-# =====================================================
-# PILOT CONFLICT DETECTION (FULLY UPDATED)
+# PILOT CONFLICT DETECTION
 # =====================================================
 
 def detect_pilot_conflicts(pilot, mission):
@@ -49,38 +27,42 @@ def detect_pilot_conflicts(pilot, mission):
     conflicts = []
 
     # Skill mismatch
-    if mission["required_skills"].lower() not in pilot["skills"].lower():
+    if mission["required_skills"].lower() not in str(pilot["skills"]).lower():
         conflicts.append("Skill mismatch")
 
     # Certification mismatch
-    if mission["required_certs"].lower() not in pilot["certifications"].lower():
+    if mission["required_certs"].lower() not in str(pilot["certifications"]).lower():
         conflicts.append("Certification mismatch")
 
     # Location mismatch
     if pilot["location"] != mission["location"]:
         conflicts.append("Location mismatch")
 
-    # Budget conflict
-    daily_rate = pilot["daily_rate_inr"]
+    # Status check
+    if str(pilot["status"]).lower() != "available":
+        conflicts.append("Pilot not available")
 
-    start_date = datetime.strptime(mission["start_date"], "%Y-%m-%d")
-    end_date = datetime.strptime(mission["end_date"], "%Y-%m-%d")
+    # Budget check
+    daily_rate = float(pilot["daily_rate_inr"])
+
+    start_date = datetime.strptime(str(mission["start_date"]), "%Y-%m-%d")
+    end_date = datetime.strptime(str(mission["end_date"]), "%Y-%m-%d")
 
     days = (end_date - start_date).days + 1
     total_cost = daily_rate * days
 
-    if total_cost > mission["mission_budget_inr"]:
+    if total_cost > float(mission["mission_budget_inr"]):
         conflicts.append("Budget exceeded")
 
-    # ADVANCED DATE OVERLAP DETECTION
-    if pilot["current_assignment"] not in ["", "-", None]:
+    # DATE OVERLAP CHECK
+    current_assignment = str(pilot["current_assignment"]).strip()
+
+    if current_assignment not in ["", "-", "nan", "None"]:
 
         missions_df = load_sheet("missions")
 
-        assigned_mission_id = pilot["current_assignment"]
-
         assigned_mission = missions_df[
-            missions_df["project_id"] == assigned_mission_id
+            missions_df["project_id"] == current_assignment
         ]
 
         if not assigned_mission.empty:
@@ -88,57 +70,60 @@ def detect_pilot_conflicts(pilot, mission):
             assigned_start = assigned_mission.iloc[0]["start_date"]
             assigned_end = assigned_mission.iloc[0]["end_date"]
 
-            new_start = mission["start_date"]
-            new_end = mission["end_date"]
-
             if is_date_overlap(
-                assigned_start, assigned_end,
-                new_start, new_end
+                assigned_start,
+                assigned_end,
+                mission["start_date"],
+                mission["end_date"]
             ):
                 conflicts.append(
-                    f"Pilot already assigned to overlapping mission ({assigned_mission_id})"
+                    f"Pilot already assigned to overlapping mission ({current_assignment})"
                 )
 
     return conflicts
 
 
 # =====================================================
-# DRONE CONFLICT DETECTION (FULLY UPDATED)
+# DRONE CONFLICT DETECTION
 # =====================================================
 
 def detect_drone_conflicts(drone, mission):
 
     conflicts = []
 
+    # Status check
+    if str(drone["status"]).lower() != "available":
+        conflicts.append("Drone not available")
+
     # Location mismatch
     if drone["location"] != mission["location"]:
         conflicts.append("Location mismatch")
 
-    # Maintenance conflict
+    # Maintenance check
     maintenance_due = datetime.strptime(
-        drone["maintenance_due"], "%Y-%m-%d"
+        str(drone["maintenance_due"]),
+        "%Y-%m-%d"
     )
 
     if maintenance_due <= datetime.today():
         conflicts.append("Drone due for maintenance")
 
-    # Weather conflict
-    weather = mission["weather_forecast"]
-    resistance = drone["weather_resistance"]
+    # Weather compatibility
+    weather = str(mission["weather_forecast"]).lower()
+    resistance = str(drone["weather_resistance"])
 
-    if weather.lower() == "rainy":
-        if "IP43" not in resistance:
-            conflicts.append("Drone not rain compatible")
+    if weather == "rainy" and "IP43" not in resistance:
+        conflicts.append("Drone not rain compatible")
 
-    # ADVANCED DATE OVERLAP DETECTION
-    if drone["current_assignment"] not in ["", "-", None]:
+    # DATE OVERLAP CHECK
+    current_assignment = str(drone["current_assignment"]).strip()
+
+    if current_assignment not in ["", "-", "nan", "None"]:
 
         missions_df = load_sheet("missions")
 
-        assigned_mission_id = drone["current_assignment"]
-
         assigned_mission = missions_df[
-            missions_df["project_id"] == assigned_mission_id
+            missions_df["project_id"] == current_assignment
         ]
 
         if not assigned_mission.empty:
@@ -146,22 +131,21 @@ def detect_drone_conflicts(drone, mission):
             assigned_start = assigned_mission.iloc[0]["start_date"]
             assigned_end = assigned_mission.iloc[0]["end_date"]
 
-            new_start = mission["start_date"]
-            new_end = mission["end_date"]
-
             if is_date_overlap(
-                assigned_start, assigned_end,
-                new_start, new_end
+                assigned_start,
+                assigned_end,
+                mission["start_date"],
+                mission["end_date"]
             ):
                 conflicts.append(
-                    f"Drone already assigned to overlapping mission ({assigned_mission_id})"
+                    f"Drone already assigned to overlapping mission ({current_assignment})"
                 )
 
     return conflicts
 
 
 # =====================================================
-# PILOT ASSIGNMENT
+# ASSIGN PILOT
 # =====================================================
 
 def assign_pilot(mission_id):
@@ -175,7 +159,7 @@ def assign_pilot(mission_id):
 
     valid_pilot = None
 
-    for index, pilot in pilots.iterrows():
+    for _, pilot in pilots.iterrows():
 
         conflicts = detect_pilot_conflicts(pilot, mission)
 
@@ -184,10 +168,9 @@ def assign_pilot(mission_id):
             break
 
     if valid_pilot is None:
-        return "No valid pilot available due to conflicts"
+        return "❌ No valid pilot available due to conflicts"
 
     client = get_client()
-
     sheet = client.open("pilot_roster").sheet1
 
     records = sheet.get_all_records()
@@ -201,11 +184,11 @@ def assign_pilot(mission_id):
 
             break
 
-    return f"Pilot {valid_pilot['name']} assigned successfully to {mission_id}"
+    return f"✅ Pilot {valid_pilot['name']} assigned to {mission_id}"
 
 
 # =====================================================
-# DRONE ASSIGNMENT
+# ASSIGN DRONE
 # =====================================================
 
 def assign_drone(mission_id):
@@ -219,7 +202,7 @@ def assign_drone(mission_id):
 
     valid_drone = None
 
-    for index, drone in drones.iterrows():
+    for _, drone in drones.iterrows():
 
         conflicts = detect_drone_conflicts(drone, mission)
 
@@ -228,10 +211,9 @@ def assign_drone(mission_id):
             break
 
     if valid_drone is None:
-        return "No valid drone available due to conflicts"
+        return "❌ No valid drone available due to conflicts"
 
     client = get_client()
-
     sheet = client.open("drone_fleet").sheet1
 
     records = sheet.get_all_records()
@@ -245,11 +227,11 @@ def assign_drone(mission_id):
 
             break
 
-    return f"Drone {valid_drone['drone_id']} assigned successfully to {mission_id}"
+    return f"✅ Drone {valid_drone['drone_id']} assigned to {mission_id}"
 
 
 # =====================================================
-# ASSIGN PILOT EXCLUDING SPECIFIC NAME
+# ASSIGN PILOT EXCLUDING
 # =====================================================
 
 def assign_pilot_excluding(mission_id, excluded_name):
@@ -261,9 +243,7 @@ def assign_pilot_excluding(mission_id, excluded_name):
         missions["project_id"] == mission_id
     ].iloc[0]
 
-    valid_pilot = None
-
-    for index, pilot in pilots.iterrows():
+    for _, pilot in pilots.iterrows():
 
         if pilot["name"] == excluded_name:
             continue
@@ -271,32 +251,28 @@ def assign_pilot_excluding(mission_id, excluded_name):
         conflicts = detect_pilot_conflicts(pilot, mission)
 
         if len(conflicts) == 0:
-            valid_pilot = pilot
-            break
 
-    if valid_pilot is None:
-        return "No alternative pilot available"
+            client = get_client()
+            sheet = client.open("pilot_roster").sheet1
 
-    client = get_client()
+            records = sheet.get_all_records()
 
-    sheet = client.open("pilot_roster").sheet1
+            for i, row in enumerate(records):
 
-    records = sheet.get_all_records()
+                if row["pilot_id"] == pilot["pilot_id"]:
 
-    for i, row in enumerate(records):
+                    sheet.update_cell(i+2, 6, "Assigned")
+                    sheet.update_cell(i+2, 7, mission_id)
 
-        if row["pilot_id"] == valid_pilot["pilot_id"]:
+                    break
 
-            sheet.update_cell(i+2, 6, "Assigned")
-            sheet.update_cell(i+2, 7, mission_id)
+            return f"✅ Pilot {pilot['name']} reassigned"
 
-            break
-
-    return f"Pilot {valid_pilot['name']} assigned successfully to {mission_id}"
+    return "❌ No replacement pilot available"
 
 
 # =====================================================
-# URGENT REASSIGNMENT
+# URGENT REASSIGN
 # =====================================================
 
 def urgent_reassign(mission_id):
@@ -321,7 +297,6 @@ def urgent_reassign(mission_id):
             pilot_sheet.update_cell(i+2, 7, "")
 
             released_pilot = row["name"]
-
             time.sleep(1)
             break
 
@@ -334,19 +309,18 @@ def urgent_reassign(mission_id):
             drone_sheet.update_cell(i+2, 6, "")
 
             released_drone = row["drone_id"]
-
             time.sleep(1)
             break
 
-    # Assign new ones
     pilot_result = assign_pilot_excluding(mission_id, released_pilot)
-
     drone_result = assign_drone(mission_id)
 
-    return (
-        f"Urgent reassignment completed\n\n"
-        f"Released Pilot: {released_pilot}\n"
-        f"Released Drone: {released_drone}\n\n"
-        f"{pilot_result}\n"
-        f"{drone_result}"
-    )
+    return f"""
+🚨 Urgent Reassignment Complete
+
+Released Pilot: {released_pilot}
+Released Drone: {released_drone}
+
+{pilot_result}
+{drone_result}
+"""
